@@ -1,129 +1,184 @@
-#!/usr/bin/env ruby
-require 'fileutils'
-EXPORT_LOCATION = "~/.bazaar/plugins/fastimport/exporters/bzr-fast-export.py"
-PYTHON = ENV["PYTHON"] || "/opt/local/bin/python2.5"
+#!/bin/sh
 
-command = ARGV.shift
-commands = [:add, :push, :fetch, :pull]
+set -e
 
-if !command || !commands.include?(command.to_sym)
-  puts "Usage: git bzr [COMMAND] [OPTIONS]"
-  puts "Commands: add, push, fetch, pull"
-  exit
-end
+root=
+bzrfastexport=`which bzr-fast-export.py 2> /dev/null` || true
+if [ -z "${bzrfastexport}" ]
+then
+	bzrfastexport=$HOME/.bazaar/plugins/fastimport/exporters/bzr-fast-export.py
+	if [ ! -x "${bzrfastexport}" ]
+	then
+		echo "Unable to locate bzr-fast-export.py"
+		echo "Giving up!"
+		exit 0
+	fi
+fi
 
-class BzrCommands
-  
-  def add(*args)
-    name = args.shift
-    location = args.shift
-    unless name && location && args.empty?
-      puts "Usage: git bzr add name location"
-      exit
-    end
-    if `git remote show`.split("\n").include?(name)
-      puts "There is already a remote with that name"
-      exit
-    end
+git_dir() {
+    git rev-parse --git-dir
+}
+
+check() {
+    git rev-parse 2> /dev/null
+    if [ $? -ne 0 ]
+    then
+	echo "Must be inside a git repository to work"
+	exit 1
+    fi
+    up=`git rev-parse --show-cdup`
+    if [ -z "$up" ]
+    then
+	up="."
+    fi
+    cd $up
+    root=`pwd`
+}
+
+add() {
+    check
+    name=$1
+    shift
+    loc=$1
+    shift
+    map=$1
+    if [ -z "$name" ] || [ -z "$loc" ]
+    then
+	echo "Usage: git bzr add name location [map]"
+	exit 1
+    fi
     
-    if `git config git-bzr.#{name}.url` != ""
-      puts "There is alread a bazaar branch with that name"
-      exit
-    end
+    if [ "`git config git-bzr.${name}.url`" ]
+    then
+	echo "There is alread a bazaar branch with that name"
+	exit 1
+    fi
     
-    if !File.exists?(File.join(location, ".bzr"))
-      puts "Remote is not a bazaar repository"
-      exit
-    end
+    if [ ! -d "${loc}/.bzr" ]
+    then
+	echo "Remote is not a bazaar repository"
+	exit 1
+    fi
 
-    `git config git-bzr.#{name}.location #{location}`
-    puts "Bazaar branch #{name} added. You can fetch it with `git bzr fetch #{name}`"
-    
-  end
-
-  def get_location(remote)
-    l = `git config git-bzr.#{remote}.location`.strip
-    if l == ""
-      puts "Cannot find bazaar remote with name `#{remote}`."
-      exit
-    end
-    l
-  end
-  
-  def fetch(*args)
-    remote = args.shift
-    unless remote && args.empty?
-      puts "Usage: git bzr fetch branchname"
-      exit
-    end
-    location = get_location(remote)
-
-    git_map = File.expand_path(File.join(git_dir, "bzr-git", "#{remote}-git-map"))
-    bzr_map = File.expand_path(File.join(git_dir, "bzr-git", "#{remote}-bzr-map"))
-
-    if !File.exists?(git_map) && !File.exists?(bzr_map)
-      print "There doesn't seem to be an existing refmap. "
-      puts "Doing an initial import"
-      FileUtils.makedirs(File.dirname(git_map))
-      `(#{PYTHON} #{EXPORT_LOCATION} --export-marks=#{bzr_map} --git-branch=bzr/#{remote} #{location}) | (git fast-import --export-marks=#{git_map})`
-    elsif File.exists?(git_map) && File.exists?(bzr_map)
-      puts "Updating remote #{remote}"
-      old_rev = `git rev-parse bzr/#{remote}`
-      `(#{PYTHON} #{EXPORT_LOCATION} --import-marks=#{bzr_map} --export-marks=#{bzr_map} --git-branch=bzr/#{remote} #{location}) | (git fast-import --quiet --export-marks=#{git_map} --import-marks=#{git_map})`
-      new_rev = `git rev-parse bzr/#{remote}`
-      puts "Changes since last update:"
-      puts `git shortlog #{old_rev.strip}..#{new_rev.strip}`
+    git config git-bzr.${name}.location ${loc}
+    if [ "$map" ]
+    then
+	git config git-bzr.${name}.map ${map}
     else
-      puts "One of the mapfiles is missing! Something went wrong!"
-    end
-  end
+    	str=`cd ${loc} && bzr info | grep "shared repository: "`
+	str=`echo $str | sed 's/shared repository: //'`
+	if [ "$str" ]
+	then
+		map=`echo $str | sed 's/\//_/g' | sed 's!^_!!'`
+	else
+		map=${name}
+	fi
+    	git config git-bzr.${name}.map ${map}
+    fi
+    
+    echo "Bazaar branch ${name} added. You can fetch it with git bzr fetch ${name}"
+}
+
+get_location() {
+    remote=$1
+    l=`git config git-bzr.${remote}.location`
+    if [ -z "$l" ]
+    then
+	echo "Cannot find bazaar remote with name ${remote}."
+	exit
+    fi
+    echo $l
+}
+
+fetch() {
+    check
+    remote=$1
+    if [ -z "$remote" ]
+    then
+	echo "Usage: git bzr fetch branchname"
+	exit 1
+    fi
+    loc=`get_location $remote`
+    
+    dir=`git_dir`
+    map=`git-config git-bzr.${remote}.map`
+    git_map="$root/$dir/bzr-git/${map}-git-map"
+    bzr_map="$root/$dir/bzr-git/${map}-bzr-map"
+    
+    if [ ! -f $git_map -a ! -f $bzr_map ]
+    then
+	echo "There doesn't seem to be an existing refmap. "
+	echo "Doing an initial import"
+	mkdir -p $root/$dir/bzr-git
+	(${bzrfastexport} --export-marks=${bzr_map} --git-branch=bzr/${remote} ${loc}) |
+	(git fast-import --export-marks=${git_map})
+    elif [ -f $git_map -a -f $bzr_map ]
+    then
+	echo "Updating remote ${remote}"
+	old_rev=""
+	new_rev=""
+	if [ -f "$root/$dir/refs/head/bzr/${remote}" ]
+	then
+	    old_rev=`git rev-parse bzr/${remote}`
+	fi
+	(${bzrfastexport} --import-marks=${bzr_map} --export-marks=${bzr_map} --git-branch=bzr/${remote} ${loc} ) |
+	(git fast-import --export-marks=${git_map} --import-marks=${git_map})
+
+	if [ "$old_rev" ]
+	then
+	    new_rev=`git rev-parse bzr/${remote}`
+	    echo "Changes since last update:"
+	    git shortlog ${old_rev}..${new_rev} | cat -
+	fi
+    else
+	echo "One of the mapfiles is missing! Something went wrong!"
+	exit 1
+    fi
+}
   
-  def push(*args)
-    remote = args.shift
-    unless remote && args.empty?
-      puts "Usage: git bzr push branchname"
-      exit
-    end
-    location = get_location(remote)
+push() {
+    check
+    remote=$1
+    if [ -z "$remote" ]
+    then
+	echo "Usage: git bzr fetch branchname"
+	exit 1
+    fi
+    loc=`get_location $remote`
     
-    if `git rev-list --left-right HEAD...bzr/#{remote} | sed -n '/^>/ p'`.strip != ""
-      puts "HEAD is not a strict child of #{remote}, cannot push. Merge first"
-      exit
-    end
+    dir=`git_dir`
+    map=`git-config git-bzr.${remote}.map`
+    git_map="$root/$dir/bzr-git/${map}-git-map"
+    bzr_map="$root/$dir/bzr-git/${map}-bzr-map"
     
-    if `git rev-list --left-right HEAD...bzr/#{remote} | sed -n '/^</ p'`.strip == ""
-      puts "Nothing to push. Commit something first"
-      exit
-    end
+    if [ "`git rev-list --left-right HEAD...bzr/${remote} | sed -n '/^>/ p'`" ]
+    then
+	echo "HEAD is not a strict child of ${remote}, cannot push. Merge first"
+	exit 1
+    fi
     
-    git_map = File.expand_path(File.join(git_dir, "bzr-git", "#{remote}-git-map"))
-    bzr_map = File.expand_path(File.join(git_dir, "bzr-git", "#{remote}-bzr-map"))
+    if [ -z "`git rev-list --left-right HEAD...bzr/${remote} | sed -n '/^</ p'`" ]
+    then
+	echo "Nothing to push. Commit something first"
+	exit 0
+    fi
 
-    if !File.exists?(git_map) || !File.exists?(bzr_map)
-      puts "We do not have refmapping yet. Then how can I push?"
-      exit
-    end
-    
-    `(git fast-export --import-marks=#{git_map} --export-marks=#{git_map} HEAD) | (cd #{location} && bzr fast-import --import-marks=#{bzr_map} --export-marks=#{bzr_map} -)`
-  end    
+    if [ ! -f $git_map -a ! -f $bzr_map ]
+    then
+	echo "We do not have refmapping yet. Then how can I push?"
+	exit 1
+    fi
 
-  def git_dir
-    `git rev-parse --git-dir`.strip
-  end
+    (git fast-export --import-marks=${git_map} --export-marks=${git_map} HEAD) |
+    (cd ${loc} && bzr fast-import --import-marks=${bzr_map} --export-marks=${bzr_map} - )
+}
 
-  def run(cmd, *args)
-    `git rev-parse 2> /dev/null`
-    if $? != 0
-      puts "Must be inside a git repository to work"
-      exit
-    end
-    up = `git rev-parse --show-cdup`.strip
-    up = "." if up == ""
-    Dir.chdir(up) do
-      __send__(cmd.to_s, *args)
-    end
-  end
-end
+cmd=$1
+shift
 
-
-BzrCommands.new.run(command, *ARGV)
+case $cmd in
+add) add $*;;
+push) push $*;;
+fetch) fetch $*;;
+*) echo "Unknown command: $cmd"; exit 1;;
+esac

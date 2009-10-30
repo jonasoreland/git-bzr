@@ -1,19 +1,34 @@
 #!/bin/sh
 
-set -e
-
 root=
-bzrfastexport=`which bzr-fast-export.py 2> /dev/null` || true
-if [ -z "${bzrfastexport}" ]
+
+#
+# Try to find bzr fast export
+#   1) bzr fast-export
+#   2) bzr-fast-export.py
+#   3) $HOME/.bazaar/plugins/fastimport/exporters/bzr-fast-export.py
+#
+bzr fast-export --help > /dev/null 2>&1; res=$?
+if [ $res -eq 0 ]
 then
-	bzrfastexport=$HOME/.bazaar/plugins/fastimport/exporters/bzr-fast-export.py
-	if [ ! -x "${bzrfastexport}" ]
+	bzrfastexport="bzr fast-export"
+else
+	t="$HOME/.bazaar/plugins/fastimport/exporters/bzr-fast-export.py"
+	bzr-fast-export.py --help > /dev/null 2>&1; res=$?
+	if [ $res -eq 0 ]
 	then
-		echo "Unable to locate bzr-fast-export.py"
-		echo "Giving up!"
-		exit 0
+		bzrfastexport=bzr-fast-export.py
+	elif [ -x $t ]
+	then
+		bzrfastexport="$t"
+	else
+                echo "Unable to locate bzr-fast-export.py"
+                echo "Giving up!"
+                exit 127
 	fi
 fi
+
+set -e
 
 git_dir() {
     git rev-parse --git-dir
@@ -76,7 +91,7 @@ add() {
     	git config git-bzr.${name}.map ${map}
     fi
     
-    echo "Bazaar branch ${name} added. You can fetch it with git bzr fetch ${name}"
+    echo "Bazaar branch ${name} added (map: $map). You can fetch it with git bzr fetch ${name}"
 }
 
 get_location() {
@@ -116,13 +131,12 @@ fetch() {
     then
 	echo "Updating remote ${remote}"
 	old_rev=""
-	new_rev=""
-	if [ -f "$root/$dir/refs/head/bzr/${remote}" ]
+	if [ -f "$root/$dir/refs/heads/bzr/${remote}" ]
 	then
 	    old_rev=`git rev-parse bzr/${remote}`
 	fi
 	(${bzrfastexport} --import-marks=${bzr_map} --export-marks=${bzr_map} --git-branch=bzr/${remote} ${loc} ) |
-	(git fast-import --export-marks=${git_map} --import-marks=${git_map})
+	(git fast-import --quiet --export-marks=${git_map} --import-marks=${git_map}) || true
 
 	if [ "$old_rev" ]
 	then

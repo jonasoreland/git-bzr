@@ -116,7 +116,7 @@ fetch() {
     loc=`get_location $remote`
     
     dir=`git_dir`
-    map=`git-config git-bzr.${remote}.map`
+    map=`git config git-bzr.${remote}.map`
     git_map="$root/$dir/bzr-git/${map}-git-map"
     bzr_map="$root/$dir/bzr-git/${map}-bzr-map"
     
@@ -161,7 +161,7 @@ push() {
     loc=`get_location $remote`
     
     dir=`git_dir`
-    map=`git-config git-bzr.${remote}.map`
+    map=`git config git-bzr.${remote}.map`
     git_map="$root/$dir/bzr-git/${map}-git-map"
     bzr_map="$root/$dir/bzr-git/${map}-bzr-map"
     
